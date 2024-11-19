@@ -68,7 +68,8 @@ class TensorboardLogger(Logger):
                  generate_function=None,
                  log_dir='logs'):
         super().__init__(log_interval, validation_interval, generate_interval, trainer, generate_function)
-        self.writer = tf.summary.FileWriter(log_dir)
+        # JOS: self.writer = tf.summary.FileWriter(log_dir)
+        self.writer = tf.summary.create_file_writer(log_dir)
 
     def log_loss(self, current_step):
         # loss

@@ -77,51 +77,36 @@ class DilatedQueue:
         self.out_pos = 0
 
 
-class ConstantPad1d(Function):
-    def __init__(self, target_size, dimension=0, value=0, pad_start=False):
-        super(ConstantPad1d, self).__init__()
-        self.target_size = target_size
-        self.dimension = dimension
-        self.value = value
-        self.pad_start = pad_start
-
-    def forward(self, input):
-        self.num_pad = self.target_size - input.size(self.dimension)
-        assert self.num_pad >= 0, 'target size has to be greater than input size'
-
-        self.input_size = input.size()
-
-        size = list(input.size())
-        size[self.dimension] = self.target_size
-        output = input.new(*tuple(size)).fill_(self.value)
-        c_output = output
-
-        # crop output
-        if self.pad_start:
-            c_output = c_output.narrow(self.dimension, self.num_pad, c_output.size(self.dimension) - self.num_pad)
+class ConstantPad1d(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, target_size, dimension=0, value=0, pad_start=False):
+        ctx.dimension = dimension
+        ctx.pad_start = pad_start
+        ctx.input_size = input.size(dimension)
+        
+        [*sizes] = input.size()
+        diff = target_size - sizes[dimension]
+        if diff <= 0:
+            return input
+        
+        sizes[dimension] = diff
+        if pad_start:
+            padded = torch.full(sizes, value, dtype=input.dtype, device=input.device)
+            return torch.cat((padded, input), dimension=dimension)
         else:
-            c_output = c_output.narrow(self.dimension, 0, c_output.size(self.dimension) - self.num_pad)
+            padded = torch.full(sizes, value, dtype=input.dtype, device=input.device)
+            return torch.cat((input, padded), dimension=dimension)
 
-        c_output.copy_(input)
-        return output
-
-    def backward(self, grad_output):
-        grad_input = grad_output.new(*self.input_size).zero_()
-        cg_output = grad_output
-
-        # crop grad_output
-        if self.pad_start:
-            cg_output = cg_output.narrow(self.dimension, self.num_pad, cg_output.size(self.dimension) - self.num_pad)
+    @staticmethod
+    def backward(ctx, grad_output):
+        dimension = ctx.dimension
+        pad_start = ctx.pad_start
+        input_size = ctx.input_size
+        if pad_start:
+            grad = grad_output.narrow(dimension, grad_output.size(dimension) - input_size, input_size)
         else:
-            cg_output = cg_output.narrow(self.dimension, 0, cg_output.size(self.dimension) - self.num_pad)
+            grad = grad_output.narrow(dimension, 0, input_size)
+        return grad, None, None, None, None  # Return gradients for all inputs
 
-        grad_input.copy_(cg_output)
-        return grad_input
-
-
-def constant_pad_1d(input,
-                    target_size,
-                    dimension=0,
-                    value=0,
-                    pad_start=False):
-    return ConstantPad1d(target_size, dimension, value, pad_start)(input)
+def constant_pad_1d(input, target_size, dimension=0, value=0, pad_start=False):
+    return ConstantPad1d.apply(input, target_size, dimension, value, pad_start)
