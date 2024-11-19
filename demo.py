@@ -9,15 +9,13 @@ import multiprocessing
 import numpy as np
 
 class MemoryDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, device):
+    def __init__(self, dataset):
         self.dataset = dataset
         self.length = len(dataset)
-        self.device = device
-    
+
     def __getitem__(self, idx):
-        x, target = self.dataset[idx]
-        return (x.to(self.device), target.to(self.device))
-    
+        return self.dataset[idx]
+
     def __len__(self):
         return self.length
 
@@ -25,26 +23,21 @@ class DeviceDataLoader:
     def __init__(self, dl, device):
         self.dl = dl
         self.device = device
-        
+        print(f"DeviceDataLoader initialized with device: {device}")
+
     def __len__(self):
         return len(self.dl)
-    
+
     def __iter__(self):
-        for b in self.dl:
-            yield tuple(t.to(self.device) for t in b)
+        for x, target in self.dl:
+            yield x.to(self.device), target.to(self.device)
 
 def main():
-    def get_device():
-        if torch.cuda.is_available():
-            return "cuda"
-        elif torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
-
-    device = get_device()
+    # Force CPU
+    device = "cpu"
     print(f"Using device: {device}")
 
-    # Set up model and move to device
+    # Set up model
     model = WaveNetModel(layers=6,
                         blocks=4,
                         dilation_channels=16,
@@ -65,17 +58,16 @@ def main():
                          target_length=model.output_length,
                          file_location='train_samples/bach_chaconne',
                          test_stride=20)
-    
+
     # Load data into memory
     print("Loading dataset file:", data.dataset_file)
     with np.load(data.dataset_file) as dataset:
         print("Available keys in dataset:", dataset.files)
         data.data = dataset['arr_0']
-            
+
     print('the dataset has ' + str(len(data)) + ' items')
 
-    # Create memory dataset with device
-    memory_dataset = MemoryDataset(data, device)
+    memory_dataset = MemoryDataset(data)
 
     # Create trainer
     trainer = WavenetTrainer(model=model,
@@ -89,11 +81,11 @@ def main():
 
     # Create dataloader
     base_dataloader = torch.utils.data.DataLoader(
-        dataset=memory_dataset, 
+        dataset=memory_dataset,
         batch_size=8,
         shuffle=True,
-        num_workers=0,  # Set back to 0 temporarily for debugging
-        persistent_workers=False
+        num_workers=2,
+        persistent_workers=True
     )
     trainer.dataloader = DeviceDataLoader(base_dataloader, device)
 
@@ -101,13 +93,12 @@ def main():
     print("dataset length:", len(memory_dataset))
 
     # Start training
-    print('start training...')
+    print('\nStarting training...')
     tic = time.time()
-    trainer.train(batch_size=8,
-                 epochs=20)
+    trainer.train(epochs=20)
     toc = time.time()
     print('Training took {} seconds.'.format(toc - tic))
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
-    main() 
+    main()

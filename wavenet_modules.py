@@ -77,36 +77,44 @@ class DilatedQueue:
         self.out_pos = 0
 
 
+def constant_pad_1d(input, target_size, dimension=0, value=0, pad_start=True):
+    """
+    Pads a 1D input tensor to a target size.
+    Args:
+        input (Tensor): Input tensor
+        target_size (int): Desired size
+        dimension (int): Dimension to pad
+        value (float): Padding value
+        pad_start (bool): Pad at start or end
+    """
+    pad_size = target_size - input.size(dimension)
+    if pad_size <= 0:
+        return input
+
+    # Create padding tensor
+    padding_shape = list(input.shape)
+    padding_shape[dimension] = pad_size
+    padding = torch.full(padding_shape, value, dtype=input.dtype, device=input.device)
+
+    # Concatenate along the specified dimension
+    if pad_start:
+        return torch.cat([padding, input], dim=dimension)
+    else:
+        return torch.cat([input, padding], dim=dimension)
+
+
 class ConstantPad1d(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, target_size, dimension=0, value=0, pad_start=False):
+    def forward(ctx, input, target_size, dimension=0, value=0, pad_start=True):
         ctx.dimension = dimension
         ctx.pad_start = pad_start
-        ctx.input_size = input.size(dimension)
-        
-        [*sizes] = input.size()
-        diff = target_size - sizes[dimension]
-        if diff <= 0:
-            return input
-        
-        sizes[dimension] = diff
-        if pad_start:
-            padded = torch.full(sizes, value, dtype=input.dtype, device=input.device)
-            return torch.cat((padded, input), dimension=dimension)
-        else:
-            padded = torch.full(sizes, value, dtype=input.dtype, device=input.device)
-            return torch.cat((input, padded), dimension=dimension)
+        return constant_pad_1d(input, target_size, dimension, value, pad_start)
 
     @staticmethod
     def backward(ctx, grad_output):
         dimension = ctx.dimension
         pad_start = ctx.pad_start
-        input_size = ctx.input_size
         if pad_start:
-            grad = grad_output.narrow(dimension, grad_output.size(dimension) - input_size, input_size)
+            return grad_output[..., -grad_output.size(dimension):], None, None, None, None
         else:
-            grad = grad_output.narrow(dimension, 0, input_size)
-        return grad, None, None, None, None  # Return gradients for all inputs
-
-def constant_pad_1d(input, target_size, dimension=0, value=0, pad_start=False):
-    return ConstantPad1d.apply(input, target_size, dimension, value, pad_start)
+            return grad_output[..., :grad_output.size(dimension)], None, None, None, None
