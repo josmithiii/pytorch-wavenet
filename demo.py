@@ -8,14 +8,15 @@ import torch
 import multiprocessing
 import numpy as np
 
-# Move classes outside main()
 class MemoryDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset):
+    def __init__(self, dataset, device):
         self.dataset = dataset
         self.length = len(dataset)
+        self.device = device
     
     def __getitem__(self, idx):
-        return self.dataset[idx]
+        x, target = self.dataset[idx]
+        return (x.to(self.device), target.to(self.device))
     
     def __len__(self):
         return self.length
@@ -73,7 +74,8 @@ def main():
             
     print('the dataset has ' + str(len(data)) + ' items')
 
-    memory_dataset = MemoryDataset(data)
+    # Create memory dataset with device
+    memory_dataset = MemoryDataset(data, device)
 
     # Create trainer
     trainer = WavenetTrainer(model=model,
@@ -85,13 +87,13 @@ def main():
                             snapshot_name='saber_model',
                             snapshot_interval=100000)
 
-    # Set up dataloader with device handling
+    # Create dataloader
     base_dataloader = torch.utils.data.DataLoader(
         dataset=memory_dataset, 
         batch_size=8,
         shuffle=True,
-        num_workers=2,
-        persistent_workers=True
+        num_workers=0,  # Set back to 0 temporarily for debugging
+        persistent_workers=False
     )
     trainer.dataloader = DeviceDataLoader(base_dataloader, device)
 
