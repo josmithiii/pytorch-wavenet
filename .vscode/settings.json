@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "/Users/jos/miniforge3/envs/env_pytorch_311/bin/python",
+    "python.analysis.extraPaths": [
+        "/Users/jos/miniforge3/envs/env_pytorch_311/lib/python3.11/site-packages"
+    ]
+} 
