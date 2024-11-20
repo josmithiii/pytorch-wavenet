@@ -12,4 +12,6 @@ conda install numpy protobuf tensorflow -c conda-forge
 # Additional packages if needed
 # conda install scipy
 
-python demo.py
+python demo.py --mode train
+python demo.py --mode train --resume snapshots/checkpoint_epoch_5.pt
+python demo.py --mode generate

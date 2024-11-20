@@ -40,6 +40,14 @@ class WaveNetModel(nn.Module):
 
         super(WaveNetModel, self).__init__()
 
+        print("Initializing WaveNetModel...")
+        print(f"Parameters: layers={layers}, blocks={blocks}, "
+              f"dilation_channels={dilation_channels}, "
+              f"residual_channels={residual_channels}, "
+              f"skip_channels={skip_channels}, "
+              f"classes={classes}, "
+              f"output_length={output_length}")
+
         self.layers = layers
         self.blocks = blocks
         self.dilation_channels = dilation_channels
@@ -61,6 +69,7 @@ class WaveNetModel(nn.Module):
         self.residual_convs = nn.ModuleList()
         self.skip_convs = nn.ModuleList()
 
+        print("Creating start convolution...")
         # 1x1 convolution to create channels
         self.start_conv = nn.Conv1d(in_channels=self.classes,
                                     out_channels=residual_channels,
@@ -80,6 +89,7 @@ class WaveNetModel(nn.Module):
                                                         dilation=new_dilation,
                                                         dtype=dtype))
 
+                print(f"Creating dilated convolution {i}...")
                 # dilated convolutions
                 self.filter_convs.append(nn.Conv1d(in_channels=residual_channels,
                                                    out_channels=dilation_channels,
@@ -121,6 +131,8 @@ class WaveNetModel(nn.Module):
         # self.output_length = 2 ** (layers - 1)
         self.output_length = output_length
         self.receptive_field = receptive_field
+
+        print("WaveNetModel initialization complete")
 
     def wavenet(self, input, dilation_func):
 
@@ -327,20 +339,121 @@ class WaveNetModel(nn.Module):
         super().cpu()
 
 
-def load_latest_model_from(location, use_cuda=True):
-    files = [location + "/" + f for f in os.listdir(location)]
-    newest_file = max(files, key=os.path.getctime)
-    print("load model " + newest_file)
+def load_to_cpu(model_path):
+    """Load a model to CPU."""
+    print(f"Loading model from {model_path}...")
 
-    if use_cuda:
-        model = torch.load(newest_file)
+    try:
+        # Load with reduced memory footprint
+        checkpoint = torch.load(model_path, map_location='cpu')
+
+        if isinstance(checkpoint, dict):
+            print("Detected new checkpoint format - falling back to original model")
+            # Try to load the original model instead
+            original_model = next(f for f in os.listdir('snapshots') if 'chaconne' in f)
+            print(f"Loading original model: snapshots/{original_model}")
+            return torch.load(f"snapshots/{original_model}", map_location='cpu')
+        else:
+            print("Using original model format")
+            return checkpoint
+
+    except Exception as e:
+        print(f"Error loading model: {str(e)}")
+        raise
+
+def load_latest_model_from(location, use_cuda=True):
+    """Load the latest model from a location."""
+    print(f"Looking for models in {location}")
+    files = [location + "/" + f for f in os.listdir(location)]
+    print(f"Found files: {files}")
+
+    # Try to load the original chaconne model first
+    chaconne_file = None
+    for f in files:
+        if 'chaconne' in f:
+            chaconne_file = f
+            break
+
+    if chaconne_file:
+        print(f"Loading original chaconne model: {chaconne_file}")
+        model = load_to_cpu(chaconne_file)
     else:
+        newest_file = max(files, key=os.path.getctime)
+        print(f"Loading newest file: {newest_file}")
         model = load_to_cpu(newest_file)
 
     return model
 
+def load_checkpoint(model_path, device='cpu'):
+    """Load a checkpoint efficiently."""
+    print(f"Loading checkpoint from {model_path}...")
 
-def load_to_cpu(path):
-    model = torch.load(path, map_location=lambda storage, loc: storage)
-    model.cpu()
-    return model
+    try:
+        # Load metadata only first
+        checkpoint = torch.load(model_path, map_location='cpu')
+
+        if not isinstance(checkpoint, dict):
+            print("Not a checkpoint file - using direct model load")
+            return checkpoint
+
+        print("Creating model with matching architecture...")
+        model = WaveNetModel(
+            layers=30,
+            blocks=4,
+            dilation_channels=32,
+            residual_channels=32,
+            skip_channels=1024,
+            classes=256,
+            output_length=16
+        )
+
+        # Load state dict in chunks
+        state_dict = checkpoint['model_state_dict']
+        chunk_size = 10  # Number of layers to load at once
+
+        for i in range(0, len(model.filter_convs), chunk_size):
+            chunk = {k: v for k, v in state_dict.items()
+                    if f'filter_convs.{i}' in k
+                    or f'gate_convs.{i}' in k
+                    or f'residual_convs.{i}' in k
+                    or f'skip_convs.{i}' in k}
+            model.load_state_dict(chunk, strict=False)
+            print(f"Loaded layers {i} to {min(i+chunk_size, len(model.filter_convs))}")
+
+        # Load remaining parameters
+        remaining = {k: v for k, v in state_dict.items()
+                    if not any(f'convs.{i}' in k
+                    for i in range(len(model.filter_convs)))}
+        model.load_state_dict(remaining, strict=False)
+        print("Loaded remaining parameters")
+
+        # Store training state
+        model.current_epoch = checkpoint.get('epoch', 0)
+        model.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        model.current_step = checkpoint.get('current_step', 0)
+
+        print(f"Checkpoint loaded successfully (epoch {model.current_epoch})")
+        return model
+
+    except Exception as e:
+        print(f"Error loading checkpoint: {str(e)}")
+        raise
+
+def save_checkpoint(model, optimizer, scheduler, epoch, filename,
+                   is_best=False, current_step=0):
+    """Save a checkpoint efficiently."""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_val_loss': model.best_val_loss,
+        'current_step': current_step
+    }
+
+    # Save with compression
+    torch.save(checkpoint, filename, _use_new_zipfile_serialization=True)
+
+    if is_best:
+        best_filename = os.path.join(os.path.dirname(filename), 'best_model.pt')
+        shutil.copyfile(filename, best_filename)

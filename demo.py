@@ -8,14 +8,36 @@ import torch
 import multiprocessing
 import numpy as np
 from utils import set_debug
+import argparse
+from tqdm import tqdm
+import scipy.io.wavfile
+import torch.nn.functional as F
+import os
 
 class MemoryDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
         self.length = len(dataset)
 
+        # Print sample item shape during initialization
+        sample_item = self.dataset[0]
+        print("\nDataset sample info:")
+        print(f"Sample item type: {type(sample_item)}")
+        if isinstance(sample_item, tuple):
+            print(f"Sample x shape: {sample_item[0].shape}")
+            print(f"Sample target shape: {sample_item[1].shape}")
+        else:
+            print(f"Sample shape: {sample_item.shape}")
+
     def __getitem__(self, idx):
-        return self.dataset[idx]
+        item = self.dataset[idx]
+        # Print shape occasionally for debugging
+        if idx % 1000 == 0:
+            if isinstance(item, tuple):
+                print(f"\nBatch {idx} shapes:")
+                print(f"x: {item[0].shape}")
+                print(f"target: {item[1].shape}")
+        return item
 
     def __len__(self):
         return self.length
@@ -39,6 +61,51 @@ class DeviceDataLoader:
 
             debug_print(f"Batch devices after transfer - x: {x.device}, target: {target.device}")
             yield x, target
+
+def generate_audio(model, device, length=16000, temperature=1.0):
+    """
+    Generate audio samples using the trained model.
+    Args:
+        model: Trained WaveNet model
+        device: Computation device (mps/cuda/cpu)
+        length: Number of samples to generate
+        temperature: Controls randomness (higher = more random, lower = more deterministic)
+    """
+    model.eval()  # Set to evaluation mode
+
+    # Start with zeros
+    current_sample = torch.zeros(1, 1, model.receptive_field).to(device)
+    generated_samples = []
+
+    print(f"\nGenerating {length} samples...")
+
+    with torch.no_grad():
+        for i in tqdm(range(length)):
+            # Get model prediction
+            output = model(current_sample)
+
+            # Apply temperature
+            if temperature != 1:
+                output = output / temperature
+
+            # Sample from the output distribution
+            probabilities = F.softmax(output[:, :, -1], dim=1)
+            next_sample = torch.multinomial(probabilities, 1)
+
+            # Append to generated samples
+            generated_samples.append(next_sample.item())
+
+            # Shift input window and add new sample
+            current_sample = torch.roll(current_sample, -1, dims=2)
+            current_sample[0, 0, -1] = next_sample
+
+    # Convert to numpy array
+    samples = np.array(generated_samples, dtype=np.int16)
+
+    # Scale back to audio range
+    samples = samples - 2**15
+
+    return samples
 
 def main():
     # Set debug printing on/off
@@ -98,42 +165,56 @@ def main():
     # Create memory dataset
     memory_dataset = MemoryDataset(data)
 
-    # Create trainer
-    trainer = WavenetTrainer(model=model,
-                            dataset=memory_dataset,
-                            lr=0.001,
-                            weight_decay=0.0,
-                            gradient_clipping=None,
-                            snapshot_path='snapshots',
-                            snapshot_name='saber_model',
-                            snapshot_interval=100000)
-
-    # Create dataloader with debug wrapper
-    base_dataloader = torch.utils.data.DataLoader(
+    # Create trainer with memory_dataset instead of dataset
+    trainer = WavenetTrainer(
+        model=model,
         dataset=memory_dataset,
         batch_size=8,
-        shuffle=True,
-        num_workers=0,  # Set to 0 for debugging
-        persistent_workers=False
+        val_batch_size=32,
+        val_subset_size=500,
+        lr=0.001,
+        snapshot_interval=1000,
+        val_interval=1000,
+        gradient_clipping=1
     )
-    trainer.dataloader = DeviceDataLoader(base_dataloader, device)
 
-    print("dataloader length: ", len(trainer.dataloader))
-    print("dataset length:", len(memory_dataset))
+    # Add argument parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['train', 'generate'], default='train')
+    parser.add_argument('--output', default='generated_audio.wav')
+    parser.add_argument('--length', type=int, default=16000)
+    parser.add_argument('--temperature', type=float, default=1.0)
+    parser.add_argument('--resume', help='path to checkpoint to resume from')
+    parser.add_argument('--epochs', type=int, default=20)
+    args = parser.parse_args()
 
-    # Start training with additional error handling
-    print('\nStarting training...')
-    tic = time.time()
-    try:
-        trainer.train(epochs=20)
-    except Exception as e:
-        print(f"\nError during training:")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {str(e)}")
-        print(f"Model device: {next(model.parameters()).device}")
-        raise
-    toc = time.time()
-    print('Training took {} seconds.'.format(toc - tic))
+    if args.mode == 'train':
+        # Start training with additional error handling
+        print('\nStarting training...')
+        tic = time.time()
+        try:
+            trainer.train(epochs=args.epochs, resume_from=args.resume)
+        except Exception as e:
+            print(f"\nError during training:")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            print(f"Model device: {next(model.parameters()).device}")
+            raise
+        toc = time.time()
+        print('Training took {} seconds.'.format(toc - tic))
+    else:
+        # Load best model for generation if available
+        best_model_path = os.path.join('snapshots', 'best_model.pt')
+        if os.path.exists(best_model_path):
+            checkpoint = torch.load(best_model_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Loaded best model from: {best_model_path}")
+
+        samples = generate_audio(model, device, args.length, args.temperature)
+
+        # Save as WAV file
+        scipy.io.wavfile.write(args.output, 16000, samples)
+        print(f"\nGenerated audio saved to: {args.output}")
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
