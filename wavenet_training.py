@@ -10,6 +10,7 @@ from model_logging import Logger
 from wavenet_modules import *
 import os
 from utils import debug_print
+from tqdm import tqdm
 
 
 def print_last_loss(opt):
@@ -61,62 +62,75 @@ class WavenetTrainer:
         self.loss_history = []
 
     def train(self, epochs=10):
+        print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
         for epoch in range(epochs):
-            print(f"\nepoch {epoch}")
-
+            print(f"epoch {epoch}")
+            
+            # Create progress bar with minimal format
+            pbar = tqdm(total=len(self.dataloader), 
+                       desc=f"Epoch {epoch}",
+                       unit='batch',
+                       leave=True,
+                       ncols=60,
+                       bar_format='{percentage:3.0f}% | {n_fmt}/{total_fmt} [{rate_fmt}]')
+            
             for (x, target) in iter(self.dataloader):
                 debug_print(f"Batch shapes before transfer - x: {x.shape}, target: {target.shape}")
                 debug_print(f"Batch devices before transfer - x: {x.device}, target: {target.device}")
-
+                
                 # Move tensors to device and ensure correct dtype
                 x = x.to(device=self.device, dtype=self.dtype)
                 target = target.to(device=self.device)
-
+                
                 debug_print(f"Batch devices after transfer - x: {x.device}, target: {target.device}")
-
+                
                 # Zero gradients
                 self.optimizer.zero_grad()
-
+                
                 # Forward pass
                 output = self.model(x)
                 debug_print(f"Output shape: {output.shape}, Target shape: {target.shape}")
-
+                
                 # Reshape output and target for loss calculation
-                if output.dim() == 2:  # [batch*time, classes]
-                    # Reshape target to match output
-                    target = target.view(-1)  # Flatten target to [batch*time]
-                else:  # output is [batch, classes, time]
-                    # Reshape output to [batch*time, classes]
-                    output = output.permute(0, 2, 1).contiguous()  # [batch, time, classes]
-                    output = output.view(-1, output.size(-1))      # [batch*time, classes]
-                    target = target.view(-1)                       # [batch*time]
-
-                debug_print(f"Reshaped - Output: {output.shape}, Target: {target.shape}")
-
+                if output.dim() == 2:
+                    target = target.view(-1)
+                else:
+                    output = output.permute(0, 2, 1).contiguous()
+                    output = output.view(-1, output.size(-1))
+                    target = target.view(-1)
+                
                 # Calculate loss
                 loss = self.criterion(output, target)
-
-                # Backward pass
+                loss_value = loss.item()
+                
+                # Backward pass and optimize
                 loss.backward()
-
-                # Gradient clipping if needed
                 if self.gradient_clipping is not None:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 
                                                  self.gradient_clipping)
-
-                # Update weights
                 self.optimizer.step()
-
-                # Log progress
-                self.loss_history.append(loss.item())
+                
+                # Update progress bar without loss display
+                pbar.update(1)
+                
+                # Log progress (less frequently)
                 if self.current_step % 100 == 0:
-                    self.logger.log_training(loss.item(), self.current_step)
-
+                    # Log to file silently
+                    self.logger.log_training(loss_value, self.current_step, print_to_console=False)
+                    # Print loss to console once
+                    print(f" - Loss = {loss_value:.6f}")
+                
+                self.loss_history.append(loss_value)
+                
                 # Save snapshot if needed
                 if self.current_step > 0 and self.current_step % self.snapshot_interval == 0:
                     self.save_snapshot()
-
+                
                 self.current_step += 1
+            
+            pbar.close()
+            print()  # Add newline after epoch
 
     def validate(self):
         self.model.eval()
