@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data
 import time
@@ -7,6 +8,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from model_logging import Logger
 from wavenet_modules import *
+import os
+from utils import debug_print
 
 
 def print_last_loss(opt):
@@ -21,73 +24,99 @@ class WavenetTrainer:
     def __init__(self,
                  model,
                  dataset,
-                 optimizer=optim.Adam,
                  lr=0.001,
-                 weight_decay=0,
-                 gradient_clipping=None,
-                 logger=Logger(),
-                 snapshot_path=None,
+                 weight_decay=0.0,
+                 snapshot_path='snapshots',
                  snapshot_name='snapshot',
                  snapshot_interval=1000,
-                 dtype=torch.FloatTensor,
-                 ltype=torch.LongTensor):
+                 log_path='logs',
+                 gradient_clipping=None):
         self.model = model
         self.dataset = dataset
         self.dataloader = None
         self.lr = lr
         self.weight_decay = weight_decay
-        self.clip = gradient_clipping
-        self.optimizer_type = optimizer
-        self.optimizer = self.optimizer_type(params=self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        self.logger = logger
-        self.logger.trainer = self
         self.snapshot_path = snapshot_path
         self.snapshot_name = snapshot_name
         self.snapshot_interval = snapshot_interval
-        self.dtype = dtype
-        self.ltype = ltype
+        self.gradient_clipping = gradient_clipping
 
-    def train(self,
-              batch_size=32,
-              epochs=10,
-              continue_training_at_step=0):
-        self.model.train()
-        self.dataloader = torch.utils.data.DataLoader(self.dataset,
-                                                      batch_size=batch_size,
-                                                      shuffle=True,
-                                                      num_workers=8,
-                                                      pin_memory=False)
-        step = continue_training_at_step
-        for current_epoch in range(epochs):
-            print("epoch", current_epoch)
-            tic = time.time()
+        # Set device and dtype
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        self.dtype = torch.float32
+
+        # Move model to device
+        self.model = self.model.to(device=self.device, dtype=self.dtype)
+
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.Adam(params=self.model.parameters(),
+                                  lr=self.lr,
+                                  weight_decay=self.weight_decay)
+
+        os.makedirs(self.snapshot_path, exist_ok=True)
+        os.makedirs(log_path, exist_ok=True)
+        self.logger = Logger(log_path=log_path)
+
+        self.current_step = 0
+        self.loss_history = []
+
+    def train(self, epochs=10):
+        for epoch in range(epochs):
+            print(f"\nepoch {epoch}")
+
             for (x, target) in iter(self.dataloader):
-                x = Variable(x.type(self.dtype))
-                target = Variable(target.view(-1).type(self.ltype))
+                debug_print(f"Batch shapes before transfer - x: {x.shape}, target: {target.shape}")
+                debug_print(f"Batch devices before transfer - x: {x.device}, target: {target.device}")
 
-                output = self.model(x)
-                loss = F.cross_entropy(output.squeeze(), target.squeeze())
+                # Move tensors to device and ensure correct dtype
+                x = x.to(device=self.device, dtype=self.dtype)
+                target = target.to(device=self.device)
+
+                debug_print(f"Batch devices after transfer - x: {x.device}, target: {target.device}")
+
+                # Zero gradients
                 self.optimizer.zero_grad()
+
+                # Forward pass
+                output = self.model(x)
+                debug_print(f"Output shape: {output.shape}, Target shape: {target.shape}")
+
+                # Reshape output and target for loss calculation
+                if output.dim() == 2:  # [batch*time, classes]
+                    # Reshape target to match output
+                    target = target.view(-1)  # Flatten target to [batch*time]
+                else:  # output is [batch, classes, time]
+                    # Reshape output to [batch*time, classes]
+                    output = output.permute(0, 2, 1).contiguous()  # [batch, time, classes]
+                    output = output.view(-1, output.size(-1))      # [batch*time, classes]
+                    target = target.view(-1)                       # [batch*time]
+
+                debug_print(f"Reshaped - Output: {output.shape}, Target: {target.shape}")
+
+                # Calculate loss
+                loss = self.criterion(output, target)
+
+                # Backward pass
                 loss.backward()
-                loss = loss.item()
 
-                if self.clip is not None:
-                    torch.nn.utils.clip_grad_norm(self.model.parameters(), self.clip)
+                # Gradient clipping if needed
+                if self.gradient_clipping is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                                                 self.gradient_clipping)
+
+                # Update weights
                 self.optimizer.step()
-                step += 1
 
-                # time step duration:
-                if step == 100:
-                    toc = time.time()
-                    print("one training step does take approximately " + str((toc - tic) * 0.01) + " seconds)")
+                # Log progress
+                self.loss_history.append(loss.item())
+                if self.current_step % 100 == 0:
+                    self.logger.log_training(loss.item(), self.current_step)
 
-                if step % self.snapshot_interval == 0:
-                    if self.snapshot_path is None:
-                        continue
-                    time_string = time.strftime("%Y-%m-%d_%H-%M-%S", time.gmtime())
-                    torch.save(self.model, self.snapshot_path + '/' + self.snapshot_name + '_' + time_string)
+                # Save snapshot if needed
+                if self.current_step > 0 and self.current_step % self.snapshot_interval == 0:
+                    self.save_snapshot()
 
-                self.logger.log(step, loss)
+                self.current_step += 1
 
     def validate(self):
         self.model.eval()
@@ -96,7 +125,7 @@ class WavenetTrainer:
         accurate_classifications = 0
         for (x, target) in iter(self.dataloader):
             x = Variable(x.type(self.dtype))
-            target = Variable(target.view(-1).type(self.ltype))
+            target = Variable(target.view(-1).type(self.dtype))
 
             output = self.model(x)
             loss = F.cross_entropy(output.squeeze(), target.squeeze())
@@ -122,4 +151,3 @@ def generate_audio(model,
         samples.append(model.generate_fast(length, temperature=temp))
     samples = np.stack(samples, axis=0)
     return samples
-
