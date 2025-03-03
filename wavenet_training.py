@@ -67,16 +67,17 @@ class WavenetTrainer:
         self.current_step = 0
         self.best_val_loss = float('inf')
         self.start_time = None
-
-        # Create data loaders with generator for reproducibility
-        generator = torch.Generator().manual_seed(42)
+        self.loss_history = []  # Add this line to initialize loss_history
+        
+        # create data loaders with generator for reproducibility
+        generator = torch.generator().manual_seed(42)
         train_size = int(0.9 * len(dataset))
         val_size = len(dataset) - train_size
 
-        print(f"\nSplitting dataset:")
-        print(f"  Total size: {len(dataset)}")
-        print(f"  Train size: {train_size}")
-        print(f"  Val size: {val_size}")
+        print(f"\nsplitting dataset:")
+        print(f"  total size: {len(dataset)}")
+        print(f"  train size: {train_size}")
+        print(f"  val size: {val_size}")
 
         train_dataset, val_dataset = random_split(
             dataset,
@@ -84,71 +85,73 @@ class WavenetTrainer:
             generator=generator
         )
 
-        self.dataloader = DataLoader(
+        self.dataloader = dataloader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=true,
             num_workers=0,
             generator=generator
         )
 
-        self.val_dataloader = DataLoader(
+        self.val_dataloader = dataloader(
             val_dataset,
             batch_size=val_batch_size,
-            shuffle=False,
+            shuffle=false,
             num_workers=0
         )
 
-        print(f"\nDataloaders created:")
-        print(f"  Training batches: {len(self.dataloader)}")
-        print(f"  Validation batches: {len(self.val_dataloader)}")
+        print(f"\ndataloaders created:")
+        print(f"  training batches: {len(self.dataloader)}")
+        print(f"  validation batches: {len(self.val_dataloader)}")
 
-        # Initialize optimizer and scheduler
-        self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        # initialize optimizer and scheduler
+        self.optimizer = optim.adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        self.scheduler = optim.lr_scheduler.reducelronplateau(
             self.optimizer,
             mode='min',
             factor=0.5,
             patience=2,
-            verbose=True
+            verbose=true
         )
 
-        # Ensure model is in the right format for MPS
+        # ensure model is in the right format for mps
         if self.device.type == 'mps':
-            print("\nConfiguring model for MPS device...")
+            print("\nconfiguring model for mps device...")
             self.model = self.model.to(dtype=torch.float32)
-            # Force CPU for operations that might be unstable on MPS
-            self.use_cpu_validation = True
+            # force cpu for operations that might be unstable on mps
+            self.use_cpu_validation = true
         else:
-            self.use_cpu_validation = False
+            self.use_cpu_validation = false
 
-    def train(self, epochs=10, resume_from=None):
-        """Train the model."""
+    def train(self, epochs=10, resume_from=none):
+        """train the model."""
         self.start_time = datetime.now()
-        print(f"\nStarting training at {self.start_time}")
-        print(f"Training for {epochs} epochs")
-        print(f"Training parameters:")
-        print(f"  Batch size: {self.batch_size}")
-        print(f"  Learning rate: {self.lr:.2e}")
-        print(f"  Validation interval: {self.val_interval} steps")
-        print(f"  Snapshot interval: {self.snapshot_interval} steps")
-        print(f"  Gradient clipping: {self.gradient_clipping}")
-        print(f"  Device: {self.device}\n")
+        print(f"\nstarting training at {self.start_time}")
+        print(f"training for {epochs} epochs")
+        print(f"training parameters:")
+        print(f"  batch size: {self.batch_size}")
+        print(f"  learning rate: {self.lr:.2e}")
+        print(f"  validation interval: {self.val_interval} steps")
+        print(f"  snapshot interval: {self.snapshot_interval} steps")
+        print(f"  gradient clipping: {self.gradient_clipping}")
+        print(f"  device: {self.device}\n")
 
         for epoch in range(self.current_epoch, epochs):
             self.model.train()
 
             for batch_idx, (x, target) in enumerate(self.dataloader):
-                # Move to device and ensure correct dtype
+                # move to device and ensure correct dtype
                 x = x.to(self.device, dtype=torch.float32)
                 target = target.to(self.device, dtype=torch.long)
 
-                # Forward pass
+                # forward pass
                 output = self.model(x)
                 target = target.view(-1)
-                loss = F.cross_entropy(output, target)
+                loss = f.cross_entropy(output, target)
 
-                # Backward pass
+                self.loss_history.append(loss.item())
+
+                # backward pass
                 self.optimizer.zero_grad()
                 loss.backward()
 
@@ -160,83 +163,84 @@ class WavenetTrainer:
 
                 self.optimizer.step()
 
-                # Progress reporting
+                # progress reporting
                 if batch_idx % 100 == 0:
                     current_lr = self.optimizer.param_groups[0]['lr']
                     elapsed = datetime.now() - self.start_time
                     progress = batch_idx / len(self.dataloader) * 100
-                    print(f"\rEpoch {epoch:>2}/{epochs-1} "
+                    print(f"\repoch {epoch:>2}/{epochs-1} "
                           f"[{progress:>3.0f}%] "
-                          f"- Loss = {loss.item():.6f} "
+                          f"- loss = {loss.item():.6f} "
                           f"(lr = {current_lr:.2e}) "
                           f"- {elapsed}", end='')
 
-                # Validation
+                # validation
                 if self.current_step % self.val_interval == 0:
                     val_loss = self.validate()
                     self.scheduler.step(val_loss)
                     self.model.train()
 
-                # Save checkpoint
+                # save checkpoint
                 if self.current_step % self.snapshot_interval == 0:
                     self.save_checkpoint(epoch)
 
                 self.current_step += 1
 
             self.current_epoch = epoch + 1
-            print(f"\nCompleted epoch {epoch}")
+            print(f"\ncompleted epoch {epoch}")
 
     def validate(self):
-        """Validate the model."""
+        """validate the model."""
         self.model.eval()
         total_loss = 0
         num_batches = 0
 
-        print(f"\nValidation ({len(self.val_dataloader)} batches):")
+        print(f"\nvalidation ({len(self.val_dataloader)} batches):")
         with torch.no_grad():
             for batch_idx, (x, target) in enumerate(self.val_dataloader):
                 try:
-                    # Move to device and ensure correct dtype
+                    # move to device and ensure correct dtype
                     x = x.to(self.device, dtype=torch.float32)
                     target = target.to(self.device, dtype=torch.long)
 
-                    # Debug info for first batch
+                    # debug info for first batch
                     if batch_idx == 0:
-                        print(f"\nFirst batch info:")
+                        print(f"\nfirst batch info:")
                         print(f"x: shape={x.shape}, device={x.device}, dtype={x.dtype}")
                         print(f"target: shape={target.shape}, device={target.device}, dtype={target.dtype}")
                         print(f"model: device={next(self.model.parameters()).device}\n")
 
-                    # Forward pass
+                    # forward pass
                     output = self.model(x)
                     target = target.view(-1)
-                    loss = F.cross_entropy(output, target)
+                    loss = f.cross_entropy(output, target)
 
                     total_loss += loss.item()
                     num_batches += 1
 
                     if batch_idx % 5 == 0:
-                        print(f"\rBatch {batch_idx:>4}/{len(self.val_dataloader)} "
+                        print(f"\rbatch {batch_idx:>4}/{len(self.val_dataloader)} "
                               f"[{batch_idx/len(self.val_dataloader)*100:>3.0f}%] "
-                              f"- Current Loss = {loss.item():.7f}", end='')
+                              f"- current loss = {loss.item():.7f}", end='')
 
-                except Exception as e:
-                    print(f"\nError in validation batch {batch_idx}:")
+                except exception as e:
+                    print(f"\nerror in validation batch {batch_idx}:")
                     print(f"x shape: {x.shape}, device: {x.device}, dtype: {x.dtype}")
                     print(f"target shape: {target.shape}, device: {target.device}, dtype: {target.dtype}")
                     print(f"model device: {next(self.model.parameters()).device}")
                     raise e
 
         avg_loss = total_loss / num_batches
-        print(f"\nValidation Loss: {avg_loss:.6f}")
+        print(f"\nvalidation loss: {avg_loss:.6f}")
 
-        # Save if best
+        # save if best
         if avg_loss < self.best_val_loss:
-            print("New best validation loss!")
+            print("new best validation loss!")
             self.best_val_loss = avg_loss
-            self.save_checkpoint(self.current_epoch, is_best=True)
+            self.save_checkpoint(self.current_epoch, is_best=true)
 
         return avg_loss
+
 
     def save_checkpoint(self, epoch, is_best=False, filename=None):
         """Save a checkpoint of the model."""
@@ -253,7 +257,7 @@ class WavenetTrainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
-            'loss': self.loss_history[-1] if self.loss_history else None,
+            'loss': self.loss_history[-1] if len(self.loss_history) > 0 else None,  # Check if loss_history has items
             'best_val_loss': self.best_val_loss,
             'current_step': self.current_step
         }
