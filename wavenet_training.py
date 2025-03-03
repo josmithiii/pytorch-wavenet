@@ -70,7 +70,8 @@ class WavenetTrainer:
         self.loss_history = []  # Add this line to initialize loss_history
         
         # create data loaders with generator for reproducibility
-        generator = torch.generator().manual_seed(42)
+        # Create data loaders with generator for reproducibility
+        generator = torch.Generator().manual_seed(42)  # Change torch.generator() to torch.Generator()
         train_size = int(0.9 * len(dataset))
         val_size = len(dataset) - train_size
 
@@ -85,10 +86,10 @@ class WavenetTrainer:
             generator=generator
         )
 
-        self.dataloader = dataloader(
+        self.dataloader = DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=true,
+            shuffle=True,
             num_workers=0,
             generator=generator
         )
@@ -123,11 +124,11 @@ class WavenetTrainer:
         else:
             self.use_cpu_validation = false
 
-    def train(self, epochs=10, resume_from=none):
-        """train the model."""
+    def train(self, epochs=10, resume_from=None):
+        """Train the model."""
         self.start_time = datetime.now()
-        print(f"\nstarting training at {self.start_time}")
-        print(f"training for {epochs} epochs")
+        print(f"\nStarting training at {self.start_time}")
+        print(f"Training for {epochs} epochs")
         print(f"training parameters:")
         print(f"  batch size: {self.batch_size}")
         print(f"  learning rate: {self.lr:.2e}")
