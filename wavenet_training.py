@@ -43,7 +43,8 @@ class WavenetTrainer:
                  val_subset_size=1000,
                  lr=0.001,
                  weight_decay=0.0,
-                 # snapshot_interval=1000,
+                 snapshot_interval=1000,
+                 snapshot_path='snapshots',
                  val_interval=1000,
                  gradient_clipping=None):
 
@@ -57,6 +58,7 @@ class WavenetTrainer:
         self.lr = lr
         self.weight_decay = weight_decay
         self.snapshot_interval = snapshot_interval
+        self.snapshot_path = snapshot_path
         self.val_interval = val_interval
         self.gradient_clipping = gradient_clipping
 
