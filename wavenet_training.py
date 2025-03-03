@@ -42,6 +42,7 @@ class WavenetTrainer:
                  val_batch_size=32,
                  val_subset_size=1000,
                  lr=0.001,
+                 weight_decay=0.0,
                  snapshot_interval=1000,
                  val_interval=1000,
                  gradient_clipping=None):
@@ -54,6 +55,7 @@ class WavenetTrainer:
         self.val_batch_size = val_batch_size
         self.val_subset_size = val_subset_size
         self.lr = lr
+        self.weight_decay = weight_decay
         self.snapshot_interval = snapshot_interval
         self.val_interval = val_interval
         self.gradient_clipping = gradient_clipping
@@ -100,7 +102,7 @@ class WavenetTrainer:
         print(f"  Validation batches: {len(self.val_dataloader)}")
 
         # Initialize optimizer and scheduler
-        self.optimizer = optim.Adam(model.parameters(), lr=lr)
+        self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',
