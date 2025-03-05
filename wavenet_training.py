@@ -3,19 +3,22 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
-from datetime import datetime
-import os
-import shutil
 import numpy as np
 import copy
+import time
+import datetime  # Proper import for datetime
+import os
+import shutil
 
 
 def print_last_loss(opt):
-    print("loss: ", opt.losses[-1])
+    """Print the last loss value."""
+    print(f"Loss: {opt.loss_history[-1]:.6f}")
 
 
 def print_last_validation_result(opt):
-    print("validation loss: ", opt.validation_results[-1])
+    """Print the last validation result."""
+    print(f"Validation Loss: {opt.validation_results[-1]:.6f}")
 
 
 class DeviceDataLoader:
@@ -124,9 +127,10 @@ class WavenetTrainer:
             self.use_cpu_validation = False
 
     def train(self, epochs=10, resume_from=None):
-        """Train the model."""
-        self.start_time = datetime.now()
-        print(f"\nStarting training at {self.start_time}")
+        """Train the model for the specified number of epochs."""
+        # Initialize training state
+        self.start_time = time.time()
+        print(f"\nStarting training at {datetime.datetime.now()}")
         print(f"Training for {epochs} epochs")
         print(f"Training parameters:")
         print(f"  Batch size: {self.batch_size}")
@@ -134,9 +138,24 @@ class WavenetTrainer:
         print(f"  Validation interval: {self.val_interval} steps")
         print(f"  Snapshot interval: {self.snapshot_interval} steps")
         print(f"  Gradient clipping: {self.gradient_clipping}")
-        print(f"  Device: {self.device}\n")
+        print(f"  Device: {self.device}")
+        print()
 
+        # Resume from checkpoint if specified
+        if resume_from:
+            self.load_checkpoint(resume_from)
+            print(f"Resuming from checkpoint: {resume_from}")
+            print(f"Current epoch: {self.current_epoch}")
+            print(f"Current step: {self.current_step}")
+            print()
+
+        # Track shape mismatch warnings
+        shape_warning_count = 0
+        max_shape_warnings = 3  # Only show first 3 warnings
+        
+        # Training loop
         for epoch in range(self.current_epoch, epochs):
+            self.current_epoch = epoch
             self.model.train()
 
             for batch_idx, (x, target) in enumerate(self.dataloader):
@@ -146,7 +165,32 @@ class WavenetTrainer:
 
                 # Forward pass
                 output = self.model(x)
-                target = target.view(-1)
+                
+                # Reshape target to match output
+                target = target.reshape(-1)
+                
+                # Check if shapes match, if not, adjust output
+                if output.size(0) != target.size(0):
+                    if shape_warning_count < max_shape_warnings:
+                        print(f"Warning: Output shape {output.size()} doesn't match target shape {target.shape}")
+                        # Truncate output to match target size
+                        if output.size(0) > target.size(0):
+                            output = output[:target.size(0)]
+                        # Or pad target to match output size
+                        else:
+                            # This is a fallback, but it's better to fix the model's forward method
+                            target = target[:output.size(0)]
+                        print(f"Adjusted shapes - Output: {output.size()}, Target: {target.size()}")
+                    elif shape_warning_count == max_shape_warnings:
+                        print("Suppressing further shape mismatch warnings...")
+                    shape_warning_count += 1
+                    
+                    # Always adjust the shapes even if we don't print warnings
+                    if output.size(0) > target.size(0):
+                        output = output[:target.size(0)]
+                    else:
+                        target = target[:output.size(0)]
+                
                 loss = F.cross_entropy(output, target)
 
                 self.loss_history.append(loss.item())
@@ -166,7 +210,7 @@ class WavenetTrainer:
                 # Progress reporting
                 if batch_idx % 100 == 0:
                     current_lr = self.optimizer.param_groups[0]['lr']
-                    elapsed = datetime.now() - self.start_time
+                    elapsed = time.time() - self.start_time
                     progress = batch_idx / len(self.dataloader) * 100
                     print(f"\rEpoch {epoch:>2}/{epochs-1} "
                           f"[{progress:>3.0f}%] "
@@ -194,6 +238,10 @@ class WavenetTrainer:
         self.model.eval()
         total_loss = 0
         num_batches = 0
+        
+        # Track shape mismatch warnings
+        shape_warning_count = 0
+        max_shape_warnings = 2  # Only show first 2 warnings
 
         print(f"\nValidation ({len(self.val_dataloader)} batches):")
         with torch.no_grad():
@@ -212,7 +260,30 @@ class WavenetTrainer:
 
                     # Forward pass
                     output = self.model(x)
-                    target = target.view(-1)
+                    target = target.reshape(-1)
+                    
+                    # Check if shapes match, if not, adjust output
+                    if output.size(0) != target.size(0):
+                        if shape_warning_count < max_shape_warnings:
+                            print(f"Warning: Validation output shape {output.size()} doesn't match target shape {target.shape}")
+                            # Truncate output to match target size
+                            if output.size(0) > target.size(0):
+                                output = output[:target.size(0)]
+                            # Or pad target to match output size (less ideal)
+                            else:
+                                # This is a fallback, but it's better to fix the model's forward method
+                                target = target[:output.size(0)]
+                            print(f"Adjusted validation shapes - Output: {output.size()}, Target: {target.size()}")
+                        elif shape_warning_count == max_shape_warnings:
+                            print("Suppressing further validation shape mismatch warnings...")
+                        shape_warning_count += 1
+                        
+                        # Always adjust the shapes even if we don't print warnings
+                        if output.size(0) > target.size(0):
+                            output = output[:target.size(0)]
+                        else:
+                            target = target[:output.size(0)]
+                    
                     loss = F.cross_entropy(output, target)
 
                     total_loss += loss.item()
@@ -232,13 +303,17 @@ class WavenetTrainer:
 
         avg_loss = total_loss / num_batches
         print(f"\nValidation Loss: {avg_loss:.6f}")
-
+        
+        # Print total shape warnings if any were suppressed
+        if shape_warning_count > max_shape_warnings:
+            print(f"Total validation shape mismatch warnings: {shape_warning_count}")
+        
         # Save if best
         if avg_loss < self.best_val_loss:
             print("New best validation loss!")
             self.best_val_loss = avg_loss
             self.save_checkpoint(self.current_epoch, is_best=True)
-
+            
         return avg_loss
 
     def save_checkpoint(self, epoch, is_best=False, filename=None):

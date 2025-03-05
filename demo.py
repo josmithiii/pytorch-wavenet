@@ -65,49 +65,58 @@ class DeviceDataLoader:
             debug_print(f"Batch devices after transfer - x: {x.device}, target: {target.device}")
             yield x, target
 
-def generate_audio(model, device, length=16000, temperature=1.0):
+def generate_audio(model, device, length, temperature=1.0):
     """
-    Generate audio samples using the trained model.
+    Generate audio samples using a trained WaveNet model.
+    
     Args:
-        model: Trained WaveNet model
-        device: Computation device (mps/cuda/cpu)
+        model: The WaveNet model
+        device: The device to use for generation
         length: Number of samples to generate
-        temperature: Controls randomness (higher = more random, lower = more deterministic)
+        temperature: Temperature for sampling (higher = more random)
+        
+    Returns:
+        Generated audio samples as a numpy array
     """
-    model.eval()  # Set to evaluation mode
-
-    # Start with zeros
-    current_sample = torch.zeros(1, 1, model.receptive_field).to(device)
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Print generation parameters
+    print(f"Generating {length} audio samples with temperature {temperature}")
+    
+    # Initialize with zeros
+    current_sample = torch.zeros(1, 1, model.receptive_field, device=device)
     generated_samples = []
-
-    print(f"\nGenerating {length} samples...")
-
+    
+    # Generate audio samples one by one
     with torch.no_grad():
         for i in tqdm(range(length)):
-            # Get model prediction
+            # Forward pass
             output = model(current_sample)
-
-            # Apply temperature
-            if temperature != 1:
-                output = output / temperature
-
-            # Sample from the output distribution
-            probabilities = F.softmax(output[:, :, -1], dim=1)
-            next_sample = torch.multinomial(probabilities, 1)
-
-            # Append to generated samples
-            generated_samples.append(next_sample.item())
-
-            # Shift input window and add new sample
+            
+            # Get the last output (corresponds to the next sample)
+            if output.size(0) > 1:
+                # If output has multiple samples, take the last one
+                output = output[-1:, :]
+                
+            # Apply temperature and sample
+            output = output.div(temperature).exp()
+            output = output / torch.sum(output)
+            
+            # Sample from the distribution
+            dist = torch.distributions.Categorical(output)
+            sample = dist.sample()
+            
+            # Save the generated sample
+            generated_samples.append(sample.item())
+            
+            # Update the current sample
             current_sample = torch.roll(current_sample, -1, dims=2)
-            current_sample[0, 0, -1] = next_sample
-
+            current_sample[0, 0, -1] = sample.float() / 255.0
+    
     # Convert to numpy array
-    samples = np.array(generated_samples, dtype=np.int16)
-
-    # Scale back to audio range
-    samples = samples - 2**15
-
+    samples = np.array(generated_samples)
+    
     return samples
 
 def generate_and_log_samples(model, step, temperature=1.0):
@@ -132,6 +141,49 @@ def generate_and_log_samples(model, step, temperature=1.0):
     return data
 
 def main():
+    # Add argument parser
+    parser = argparse.ArgumentParser(description='WaveNet training and generation')
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'generate'],
+                        help='Mode: train or generate')
+    parser.add_argument('--output', type=str, default='generated_audio.wav',
+                        help='Output file name for generated audio')
+    parser.add_argument('--length', type=int, default=16000,
+                        help='Length of generated audio in samples')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='Temperature for sampling (higher = more random)')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='Path to checkpoint to resume training from')
+    parser.add_argument('--start-fresh', action='store_true',
+                        help='Start training from scratch')
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume training from the latest checkpoint')
+    parser.add_argument('--epochs', type=int, default=100,
+                        help='Number of epochs to train for')
+    parser.add_argument('--batch-size', type=int, default=32,
+                        help='Batch size for training')
+    parser.add_argument('--learning-rate', type=float, default=0.001,
+                        help='Learning rate for training')
+    parser.add_argument('--model-dir', type=str, default='snapshots',
+                        help='Directory to save model checkpoints')
+    
+    # Model architecture parameters
+    parser.add_argument('--layers', type=int, default=10,
+                        help='Number of layers in each block')
+    parser.add_argument('--blocks', type=int, default=4,
+                        help='Number of blocks in the model')
+    parser.add_argument('--dilation-channels', type=int, default=32,
+                        help='Number of channels in the dilated convolutions')
+    parser.add_argument('--residual-channels', type=int, default=32,
+                        help='Number of channels in the residual connections')
+    parser.add_argument('--skip-channels', type=int, default=256,
+                        help='Number of channels in the skip connections')
+    parser.add_argument('--output-length', type=int, default=16,
+                        help='Output length of the model')
+    parser.add_argument('--dropout-rate', type=float, default=0.2,
+                        help='Dropout rate')
+    
+    args = parser.parse_args()
+    
     # Set debug printing on/off
     set_debug(False)  # Change to True when you need debug output
 
@@ -149,24 +201,29 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
-    # Set up model
-    model = WaveNetModel(layers=6,
-                        blocks=4,
-                        dilation_channels=16,
-                        residual_channels=16,
-                        skip_channels=32,
-                        output_length=8,
-                        bias=False)
-    model = load_latest_model_from('snapshots', use_cuda=False)
-
-    # Ensure model is on correct device
-    model = model.to(device)
-    print(f"Model device after transfer: {next(model.parameters()).device}")
-    print(f"Start conv weight device: {model.start_conv.weight.device}")
-
-    print('model: ', model)
-    print('receptive field: ', model.receptive_field)
-    print('parameter count: ', model.parameter_count())
+    # Create model directory if it doesn't exist
+    os.makedirs(args.model_dir, exist_ok=True)
+    
+    # Create model with consistent parameters
+    model = WaveNetModel(
+        layers=args.layers,
+        blocks=args.blocks,
+        dilation_channels=args.dilation_channels,
+        residual_channels=args.residual_channels,
+        skip_channels=args.skip_channels,
+        output_length=args.output_length,
+        dropout_rate=args.dropout_rate
+    ).to(device)
+    
+    print(f"Created WaveNet model with parameters:")
+    print(f"  - Layers: {args.layers}")
+    print(f"  - Blocks: {args.blocks}")
+    print(f"  - Dilation channels: {args.dilation_channels}")
+    print(f"  - Residual channels: {args.residual_channels}")
+    print(f"  - Skip channels: {args.skip_channels}")
+    print(f"  - Output length: {args.output_length}")
+    print(f"  - Dropout rate: {args.dropout_rate}")
+    print(f"Total parameters: {model.parameter_count():,}")
 
     # Create dataset and dataloader (rest of the setup remains the same)
     data = WavenetDataset(dataset_file='train_samples/bach_chaconne/dataset.npz',
@@ -189,39 +246,28 @@ def main():
     # Create memory dataset
     memory_dataset = MemoryDataset(data)
 
-    # Create trainer with memory_dataset instead of dataset
+    # Create trainer with memory_dataset
     trainer = WavenetTrainer(
         model=model,
         dataset=memory_dataset,
-        batch_size=32,  # Increased from 16
+        batch_size=args.batch_size,
         val_batch_size=32,
         val_subset_size=1000,  # Increased from 500
-        lr=0.0005,  # Reduced from 0.001
+        lr=args.learning_rate,
         weight_decay=0.01,  # Added L2 regularization
-        snapshot_interval=1000,
-        val_interval=500,  # More frequent validation
         gradient_clipping=1,
-        num_workers=4
+        snapshot_interval=500,  # More frequent snapshots
+        snapshot_path=args.model_dir,
+        val_interval=500  # More frequent validation
     )
-
-    # Add argument parser
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['train', 'generate'], default='train')
-    parser.add_argument('--output', default='generated_audio.wav')
-    parser.add_argument('--length', type=int, default=16000)
-    parser.add_argument('--temperature', type=float, default=1.0)
-    parser.add_argument('--resume', help='path to checkpoint to resume from')
-    parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--tensorboard-dir', default='runs', help='TensorBoard log directory')
-    args = parser.parse_args()
 
     if args.mode == 'train':
         # Set up TensorBoard logging
-        log_dir = os.path.join(args.tensorboard_dir, time.strftime('%Y%m%d-%H%M%S'))
+        log_dir = os.path.join(args.model_dir, time.strftime('%Y%m%d-%H%M%S'))
         writer = SummaryWriter(log_dir)
         print(f"\nTensorBoard logs will be saved to: {log_dir}")
         print("To view training progress, run:")
-        print(f"tensorboard --logdir={args.tensorboard_dir}")
+        print(f"tensorboard --logdir={args.model_dir}")
         
         # Set up TensorboardLogger with the writer
         logger = TensorboardLogger(
@@ -237,7 +283,7 @@ def main():
         print('\nStarting training...')
         tic = time.time()
         try:
-            trainer.train(epochs=args.epochs, resume_from=args.resume)
+            trainer.train(epochs=args.epochs, resume_from=args.checkpoint)
         except KeyboardInterrupt:
             print("\nTraining interrupted. Saving checkpoint...")
             trainer.save_checkpoint(trainer.current_epoch)
@@ -250,25 +296,45 @@ def main():
             raise
         finally:
             toc = time.time()
-            print('Training took {} seconds.'.format(toc - tic))
+            print(f"Training took {toc - tic} seconds.")
+            print("\nTraining complete!")
+            print("To analyze training results, run: tensorboard --logdir=runs")
+            print("Then open http://localhost:6006 in your browser")
+            print("\nTips:")
+            print("- Use --start-fresh to train a new model from scratch")
+            print("- Use --resume to continue training from a checkpoint")
+            print("- Use --mode generate to generate audio with a trained model")
             writer.close()
             
-        print("\nTraining complete!")
-        print(f"To analyze training results, run: tensorboard --logdir={args.tensorboard_dir}")
-        print("Then open http://localhost:6006 in your browser")
-
     else:
         # Load best model for generation if available
-        best_model_path = os.path.join('snapshots', 'best_model.pt')
+        best_model_path = os.path.join(args.model_dir, 'checkpoint_epoch_0.pt')
         if os.path.exists(best_model_path):
+            print(f"Loading model from: {best_model_path}")
+            # Create a new model with the same architecture as the saved model
             checkpoint = torch.load(best_model_path, map_location=device)
+            # Recreate the model with the same parameters
+            model = WaveNetModel(layers=args.layers,
+                                blocks=args.blocks,
+                                dilation_channels=args.dilation_channels,
+                                residual_channels=args.residual_channels,
+                                skip_channels=args.skip_channels,
+                                output_length=args.output_length,
+                                dropout_rate=args.dropout_rate)
+            model = model.to(device)
             model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded best model from: {best_model_path}")
+            print(f"Loaded model from: {best_model_path}")
+        else:
+            print(f"Could not find model at: {best_model_path}")
 
         samples = generate_audio(model, device, args.length, args.temperature)
 
+        # Convert from uint8 (0-255) to int16 for WAV file
+        # Shift to center around 0 and scale to int16 range
+        samples_int16 = (samples.astype(np.int16) - 128) * 256
+
         # Save as WAV file
-        scipy.io.wavfile.write(args.output, 16000, samples)
+        scipy.io.wavfile.write(args.output, 16000, samples_int16)
         print(f"\nGenerated audio saved to: {args.output}")
 
 if __name__ == '__main__':

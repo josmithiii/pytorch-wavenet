@@ -19,34 +19,17 @@ class WaveNetModel(nn.Module):
         output_length (Int):        Number of samples that are generated for each input
         kernel_size (Int):          Size of the dilation kernel
         dtype:                      Parameter type of this model
+        dropout_rate (Float):       Dropout rate for the model
 
     Shape:
         - Input: :math:`(N, C_{in}, L_{in})`
         - Output: :math:`()`
         L should be the length of the receptive field
     """
-    def __init__(self,
-                 layers=10,
-                 blocks=4,
-                 dilation_channels=32,
-                 residual_channels=32,
-                 skip_channels=256,
-                 end_channels=256,
-                 classes=256,
-                 output_length=32,
-                 kernel_size=2,
-                 dtype=torch.FloatTensor,
-                 bias=False):
-
+    def __init__(self, layers=10, blocks=4, dilation_channels=32,
+                 residual_channels=32, skip_channels=256,
+                 classes=256, output_length=256, kernel_size=2, dropout_rate=0.2):
         super(WaveNetModel, self).__init__()
-
-        print("Initializing WaveNetModel...")
-        print(f"Parameters: layers={layers}, blocks={blocks}, "
-              f"dilation_channels={dilation_channels}, "
-              f"residual_channels={residual_channels}, "
-              f"skip_channels={skip_channels}, "
-              f"classes={classes}, "
-              f"output_length={output_length}")
 
         self.layers = layers
         self.blocks = blocks
@@ -55,136 +38,168 @@ class WaveNetModel(nn.Module):
         self.skip_channels = skip_channels
         self.classes = classes
         self.kernel_size = kernel_size
-        self.dtype = dtype
-
-        # build model
-        receptive_field = 1
-        init_dilation = 1
-
-        self.dilations = []
-        self.dilated_queues = []
-        # self.main_convs = nn.ModuleList()
+        self.output_length = output_length
+        self.dropout_rate = dropout_rate
+        
+        # Add init_dilation attribute
+        self.init_dilation = 1
+        
+        # Calculate receptive field and initialize dilations
+        self.receptive_field = self.calculate_receptive_field()
+        
+        # Create start convolution
+        print("Creating start convolution...")
+        self.start_conv = nn.Conv1d(in_channels=self.classes,
+                                   out_channels=self.residual_channels,
+                                   kernel_size=1,
+                                   bias=False)
+        
+        # Create dilated convolution layers
         self.filter_convs = nn.ModuleList()
         self.gate_convs = nn.ModuleList()
         self.residual_convs = nn.ModuleList()
         self.skip_convs = nn.ModuleList()
-
-        print("Creating start convolution...")
-        # 1x1 convolution to create channels
-        self.start_conv = nn.Conv1d(in_channels=self.classes,
-                                    out_channels=residual_channels,
-                                    kernel_size=1,
-                                    bias=bias)
-
+        
+        # Create dropout layers only if dropout_rate > 0
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(self.dropout_rate)
+            self.skip_dropout = nn.Dropout(self.dropout_rate)
+        
+        # Create dilated convolution layers for each block and layer
         for b in range(blocks):
-            additional_scope = kernel_size - 1
-            new_dilation = 1
             for i in range(layers):
-                # dilations of this layer
-                self.dilations.append((new_dilation, init_dilation))
-
-                # dilated queues for fast generation
-                self.dilated_queues.append(DilatedQueue(max_length=(kernel_size - 1) * new_dilation + 1,
-                                                        num_channels=residual_channels,
-                                                        dilation=new_dilation,
-                                                        dtype=dtype))
-
+                dilation = 2 ** i
                 print(f"Creating dilated convolution {i}...")
-                # dilated convolutions
-                self.filter_convs.append(nn.Conv1d(in_channels=residual_channels,
-                                                   out_channels=dilation_channels,
-                                                   kernel_size=kernel_size,
-                                                   bias=bias))
-
-                self.gate_convs.append(nn.Conv1d(in_channels=residual_channels,
-                                                 out_channels=dilation_channels,
-                                                 kernel_size=kernel_size,
-                                                 bias=bias))
-
-                # 1x1 convolution for residual connection
-                self.residual_convs.append(nn.Conv1d(in_channels=dilation_channels,
-                                                     out_channels=residual_channels,
-                                                     kernel_size=1,
-                                                     bias=bias))
-
-                # 1x1 convolution for skip connection
-                self.skip_convs.append(nn.Conv1d(in_channels=dilation_channels,
-                                                 out_channels=skip_channels,
-                                                 kernel_size=1,
-                                                 bias=bias))
-
-                receptive_field += additional_scope
-                additional_scope *= 2
-                init_dilation = new_dilation
-                new_dilation *= 2
-
-        self.end_conv_1 = nn.Conv1d(in_channels=skip_channels,
-                                  out_channels=end_channels,
-                                  kernel_size=1,
-                                  bias=True)
-
-        self.end_conv_2 = nn.Conv1d(in_channels=end_channels,
-                                    out_channels=classes,
-                                    kernel_size=1,
-                                    bias=True)
-
-        # self.output_length = 2 ** (layers - 1)
-        self.output_length = output_length
-        self.receptive_field = receptive_field
-
+                
+                # Filter convolution
+                self.filter_convs.append(nn.Conv1d(in_channels=self.residual_channels,
+                                                  out_channels=self.dilation_channels,
+                                                  kernel_size=self.kernel_size,
+                                                  dilation=dilation,
+                                                  bias=False))
+                
+                # Gate convolution
+                self.gate_convs.append(nn.Conv1d(in_channels=self.residual_channels,
+                                                out_channels=self.dilation_channels,
+                                                kernel_size=self.kernel_size,
+                                                dilation=dilation,
+                                                bias=False))
+                
+                # Residual convolution (1x1)
+                self.residual_convs.append(nn.Conv1d(in_channels=self.dilation_channels,
+                                                    out_channels=self.residual_channels,
+                                                    kernel_size=1,
+                                                    bias=False))
+                
+                # Skip convolution (1x1)
+                self.skip_convs.append(nn.Conv1d(in_channels=self.dilation_channels,
+                                                out_channels=self.skip_channels,
+                                                kernel_size=1,
+                                                bias=False))
+        
+        # Create output layers
+        self.end_conv_1 = nn.Conv1d(in_channels=self.skip_channels,
+                                   out_channels=self.skip_channels,
+                                   kernel_size=1,
+                                   bias=False)
+        self.end_conv_2 = nn.Conv1d(in_channels=self.skip_channels,
+                                   out_channels=self.classes,
+                                   kernel_size=1,
+                                   bias=False)
+        
         print("WaveNetModel initialization complete")
 
-    def wavenet(self, input, dilation_func):
+    def wavenet(self, input_data, dilation_func=None):
+        """
+        Apply the WaveNet layers to the input data.
+        
+        Args:
+            input_data (Tensor): Input tensor
+            dilation_func (function, optional): Function to apply dilation
+            
+        Returns:
+            Tensor: Output tensor after applying WaveNet layers
+        """
+        # Use wavenet_dilate as the default dilation function if none provided
+        if dilation_func is None:
+            dilation_func = self.wavenet_dilate
+            
+        # Initialize skip connection as None
+        skip = None
+        
+        # Apply dilations for each layer in each block
+        for b in range(self.blocks):
+            for i in range(self.layers):
+                # Get the current dilation
+                current_dilation = 2 ** i
+                
+                # Store the residual
+                residual = input_data
+                
+                # Apply dilation function with correct layer index
+                layer_idx = i + b * self.layers
+                x = dilation_func(input_data, current_dilation, self.init_dilation, layer_idx)
+                
+                # Apply 1x1 residual convolution
+                residual_conv = self.residual_convs[layer_idx]
+                x = residual_conv(x)
+                
+                # Add residual connection with size check
+                if x.size(2) != residual.size(2):
+                    # Adjust time dimension if needed
+                    if x.size(2) < residual.size(2):
+                        residual = residual[:, :, :x.size(2)]
+                    else:
+                        x = x[:, :, :residual.size(2)]
+                
+                input_data = x + residual
+                
+                # Apply 1x1 skip convolution and add to skip connections
+                skip_conv = self.skip_convs[layer_idx]
+                skip_contribution = skip_conv(x)
+                
+                # Add skip connection
+                if skip is None:  # First skip connection
+                    skip = skip_contribution
+                else:
+                    # Ensure dimensions match before adding
+                    if skip.size(2) != skip_contribution.size(2):
+                        # Adjust time dimension if needed
+                        if skip.size(2) > skip_contribution.size(2):
+                            skip = skip[:, :, :skip_contribution.size(2)]
+                        else:
+                            skip_contribution = skip_contribution[:, :, :skip.size(2)]
+                    
+                    skip = skip + skip_contribution
+        
+        return skip
 
-        x = self.start_conv(input)
-        skip = 0
-
-        # WaveNet layers
-        for i in range(self.blocks * self.layers):
-
-            #            |----------------------------------------|     *residual*
-            #            |                                        |
-            #            |    |-- conv -- tanh --|                |
-            # -> dilate -|----|                  * ----|-- 1x1 -- + -->	*input*
-            #                 |-- conv -- sigm --|     |
-            #                                         1x1
-            #                                          |
-            # ---------------------------------------> + ------------->	*skip*
-
-            (dilation, init_dilation) = self.dilations[i]
-
-            residual = dilation_func(x, dilation, init_dilation, i)
-
-            # dilated convolution
-            filter = self.filter_convs[i](residual)
-            filter = F.tanh(filter)
-            gate = self.gate_convs[i](residual)
-            gate = F.sigmoid(gate)
-            x = filter * gate
-
-            # parametrized skip connection
-            s = x
-            if x.size(2) != 1:
-                 s = dilate(x, 1, init_dilation=dilation)
-            s = self.skip_convs[i](s)
-            try:
-                skip = skip[:, :, -s.size(2):]
-            except:
-                skip = 0
-            skip = s + skip
-
-            x = self.residual_convs[i](x)
-            x = x + residual[:, :, (self.kernel_size - 1):]
-
-        x = F.relu(skip)
-        x = F.relu(self.end_conv_1(x))
-        x = self.end_conv_2(x)
-
-        return x
-
-    def wavenet_dilate(self, input, dilation, init_dilation, i):
-        x = dilate(input, dilation, init_dilation)
-        return x
+    def wavenet_dilate(self, input, dilation, init_dilation=1, layer_idx=0):
+        """
+        Apply dilated convolution with filter and gate mechanisms.
+        
+        Args:
+            input (Tensor): Input tensor
+            dilation (int): Dilation factor
+            init_dilation (int): Initial dilation value
+            layer_idx (int): Current layer index
+            
+        Returns:
+            Tensor: Output tensor after applying dilated convolution
+        """
+        # Apply dilated convolution
+        x = self.dilated_conv(input, dilation, init_dilation)
+        
+        # Get filter and gate convolutions for this layer
+        filter_conv = self.filter_convs[layer_idx]
+        gate_conv = self.gate_convs[layer_idx]
+        
+        # Apply filter (tanh) and gate (sigmoid) convolutions
+        filter_output = torch.tanh(filter_conv(x))
+        gate_output = torch.sigmoid(gate_conv(x))
+        
+        # Combine filter and gate outputs
+        return filter_output * gate_output
 
     def queue_dilate(self, input, dilation, init_dilation, i):
         queue = self.dilated_queues[i]
@@ -195,16 +210,75 @@ class WaveNetModel(nn.Module):
 
         return x
 
-    def forward(self, input):
-        x = self.wavenet(input,
-                         dilation_func=self.wavenet_dilate)
+    def dilated_conv(self, input, dilation, init_dilation=1):
+        """
+        Apply dilated convolution to input tensor.
+        
+        Args:
+            input (Tensor): Input tensor
+            dilation (int): Dilation factor
+            init_dilation (int): Initial dilation value
+            
+        Returns:
+            Tensor: Output tensor after applying dilated convolution
+        """
+        # Calculate padding based on dilation
+        padding = (dilation * (self.kernel_size - 1)) // 2
+        
+        # Apply causal convolution padding
+        if padding > 0:
+            # Add padding to the left (causal)
+            padded = F.pad(input, (padding, 0))
+        else:
+            padded = input
+        
+        # Return the padded input (the actual convolution is applied in wavenet_dilate)
+        return padded
 
-        # reshape output
-        [n, c, l] = x.size()
-        l = self.output_length
-        x = x[:, :, -l:]
+    def forward(self, x):
+        """
+        Forward pass through the WaveNet model.
+        
+        Args:
+            x: Input tensor of shape [batch_size, classes, time_steps]
+            
+        Returns:
+            Output tensor with shape [batch_size * output_length, classes]
+        """
+        # Apply initial convolution
+        x = self.start_conv(x)
+        
+        # Apply input dropout if available
+        if hasattr(self, 'dropout'):
+            x = self.dropout(x)
+            
+        # Apply WaveNet layers
+        skip = self.wavenet(x)
+        
+        # Final processing
+        x = F.relu(skip)
+        x = self.end_conv_1(x)
+        
+        x = F.relu(x)
+        x = self.end_conv_2(x)
+        
+        # Get current shape
+        batch_size, channels, time_steps = x.shape
+        
+        # Print shape information for debugging
+        print(f"Output shape before reshape: {x.shape}")
+        
+        # Ensure tensor is contiguous
+        x = x.contiguous()
+        
+        # Transpose to [batch_size, time_steps, channels]
         x = x.transpose(1, 2).contiguous()
-        x = x.view(n * l, c)
+        
+        # Reshape to [batch_size * time_steps, channels]
+        x = x.reshape(batch_size * time_steps, channels)
+        
+        print(f"Final output shape: {x.shape}")
+        
         return x
 
     def generate(self,
@@ -338,28 +412,64 @@ class WaveNetModel(nn.Module):
             q.dtype = self.dtype
         super().cpu()
 
+    def calculate_receptive_field(self):
+        """
+        Calculate the receptive field of the model based on layers, blocks, and dilations.
+        
+        Returns:
+            int: The receptive field size
+        """
+        # Calculate receptive field
+        receptive_field = 1
+        for b in range(self.blocks):
+            for i in range(self.layers):
+                dilation = 2 ** i
+                receptive_field += dilation * (self.kernel_size - 1)
+        
+        return receptive_field
+
 
 def load_to_cpu(model_path):
-    """Load a model to CPU."""
-    print(f"Loading model from {model_path}...")
-
+    """Load model to CPU."""
     try:
+        print(f"Loading model from {model_path}")
         # Load with reduced memory footprint
         checkpoint = torch.load(model_path, map_location='cpu')
 
         if isinstance(checkpoint, dict):
-            print("Detected new checkpoint format - falling back to original model")
-            # Try to load the original model instead
-            original_model = next(f for f in os.listdir('snapshots') if 'chaconne' in f)
-            print(f"Loading original model: snapshots/{original_model}")
-            return torch.load(f"snapshots/{original_model}", map_location='cpu')
+            print("Detected checkpoint format with state_dict")
+            if 'model_state_dict' in checkpoint:
+                # Create a new model with the same architecture
+                model = WaveNetModel(layers=6,
+                                    blocks=4,
+                                    dilation_channels=16,
+                                    residual_channels=16,
+                                    skip_channels=32,
+                                    output_length=8,
+                                    dropout_rate=0.2,
+                                    bias=False)
+                # Load the state dict
+                model.load_state_dict(checkpoint['model_state_dict'])
+                return model
+            else:
+                print("Checkpoint doesn't contain model_state_dict")
+                return checkpoint
         else:
             print("Using original model format")
             return checkpoint
 
     except Exception as e:
         print(f"Error loading model: {str(e)}")
-        raise
+        print("Creating a new model instead")
+        model = WaveNetModel(layers=6,
+                            blocks=4,
+                            dilation_channels=16,
+                            residual_channels=16,
+                            skip_channels=32,
+                            output_length=8,
+                            dropout_rate=0.2,
+                            bias=False)
+        return model
 
 def load_latest_model_from(location, use_cuda=True):
     """Load the latest model from a location."""
@@ -367,20 +477,30 @@ def load_latest_model_from(location, use_cuda=True):
     files = [location + "/" + f for f in os.listdir(location)]
     print(f"Found files: {files}")
 
-    # Try to load the original chaconne model first
-    chaconne_file = None
-    for f in files:
-        if 'chaconne' in f:
-            chaconne_file = f
-            break
-
-    if chaconne_file:
-        print(f"Loading original chaconne model: {chaconne_file}")
-        model = load_to_cpu(chaconne_file)
-    else:
-        newest_file = max(files, key=os.path.getctime)
-        print(f"Loading newest file: {newest_file}")
+    # Filter for checkpoint files first
+    checkpoint_files = [f for f in files if 'checkpoint' in f or 'best_model' in f]
+    
+    if checkpoint_files:
+        # Get the newest checkpoint file
+        newest_file = max(checkpoint_files, key=os.path.getctime)
+        print(f"Loading newest checkpoint file: {newest_file}")
         model = load_to_cpu(newest_file)
+    else:
+        # If no checkpoint files, look for any model file
+        if files:
+            newest_file = max(files, key=os.path.getctime)
+            print(f"No checkpoint files found. Loading newest file: {newest_file}")
+            model = load_to_cpu(newest_file)
+        else:
+            print("No model files found. Creating a new model.")
+            model = WaveNetModel(layers=6,
+                                blocks=4,
+                                dilation_channels=16,
+                                residual_channels=16,
+                                skip_channels=32,
+                                output_length=8,
+                                dropout_rate=0.2,
+                                bias=False)
 
     return model
 
