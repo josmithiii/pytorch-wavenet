@@ -84,8 +84,10 @@ def generate_audio(model, device, length, temperature=1.0):
     # Print generation parameters
     print(f"Generating {length} audio samples with temperature {temperature}")
     
-    # Initialize with zeros
-    current_sample = torch.zeros(1, 1, model.receptive_field, device=device)
+    # Initialize with zeros - using one-hot encoding with 256 classes
+    current_sample = torch.zeros(1, 256, model.receptive_field, device=device)
+    # Set the first position (silence) to 1 in the one-hot encoding
+    current_sample[:, 0, :] = 1.0
     generated_samples = []
     
     # Generate audio samples one by one
@@ -110,9 +112,12 @@ def generate_audio(model, device, length, temperature=1.0):
             # Save the generated sample
             generated_samples.append(sample.item())
             
-            # Update the current sample
+            # Update the current sample - shift and add one-hot encoded new sample
             current_sample = torch.roll(current_sample, -1, dims=2)
-            current_sample[0, 0, -1] = sample.float() / 255.0
+            # Clear the last position
+            current_sample[:, :, -1] = 0.0
+            # Set the one-hot encoded value
+            current_sample[0, sample.item(), -1] = 1.0
     
     # Convert to numpy array
     samples = np.array(generated_samples)
@@ -361,15 +366,31 @@ def main():
         else:
             print(f"Could not find model at: {best_model_path}")
 
+        # Print model information 
+        print(f"Model receptive field: {model.receptive_field}")
+        print(f"Model classes: {model.classes}")
+        
+        # Generate audio
         samples = generate_audio(model, device, args.length, args.temperature)
-
+        
+        # Print sample information
+        print(f"Generated {len(samples)} samples")
+        print(f"Sample values range: {np.min(samples)} to {np.max(samples)}")
+        print(f"Sample data type: {samples.dtype}")
+        
         # Convert from uint8 (0-255) to int16 for WAV file
         # Shift to center around 0 and scale to int16 range
         samples_int16 = (samples.astype(np.int16) - 128) * 256
-
+        
+        print(f"Converted audio range: {np.min(samples_int16)} to {np.max(samples_int16)}")
+        
         # Save as WAV file
-        scipy.io.wavfile.write(args.output, 16000, samples_int16)
-        print(f"\nGenerated audio saved to: {args.output}")
+        try:
+            import scipy.io.wavfile
+            scipy.io.wavfile.write(args.output, 16000, samples_int16)
+            print(f"\nGenerated audio saved to: {args.output}")
+        except Exception as e:
+            print(f"Error saving audio: {str(e)}")
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
