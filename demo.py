@@ -193,12 +193,13 @@ def main():
     trainer = WavenetTrainer(
         model=model,
         dataset=memory_dataset,
-        batch_size=16, # was 8
+        batch_size=32,  # Increased from 16
         val_batch_size=32,
-        val_subset_size=500,
-        lr=0.001,
+        val_subset_size=1000,  # Increased from 500
+        lr=0.0005,  # Reduced from 0.001
+        weight_decay=0.01,  # Added L2 regularization
         snapshot_interval=1000,
-        val_interval=1000,
+        val_interval=500,  # More frequent validation
         gradient_clipping=1,
         num_workers=4
     )
