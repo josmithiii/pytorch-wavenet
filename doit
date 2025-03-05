@@ -1,6 +1,7 @@
 #!/bin/bash -x
 
-# Working 2025-03-04:
+# Python 3.12 is working as of 2025-03-04:
+conda init
 conda activate env_pytorch_312
 # Previously Python 3.12 would not work:
 # Create new environment from scratch:
