@@ -49,7 +49,8 @@ class WavenetTrainer:
                  snapshot_interval=1000,
                  snapshot_path='snapshots',
                  val_interval=1000,
-                 gradient_clipping=None):
+                 gradient_clipping=None,
+                 max_batches_per_epoch=None):
 
         self.model = model
         self.device = next(model.parameters()).device
@@ -57,6 +58,7 @@ class WavenetTrainer:
         # Store training parameters
         self.batch_size = batch_size
         self.val_batch_size = val_batch_size
+        self.max_batches_per_epoch = max_batches_per_epoch
         self.val_subset_size = val_subset_size
         self.lr = lr
         self.weight_decay = weight_decay
@@ -159,6 +161,11 @@ class WavenetTrainer:
             self.model.train()
 
             for batch_idx, (x, target) in enumerate(self.dataloader):
+                # Stop if we've reached the max batches for this epoch
+                if self.max_batches_per_epoch is not None and batch_idx >= self.max_batches_per_epoch:
+                    print(f"\nStopping epoch early after {batch_idx} batches (max_batches_per_epoch={self.max_batches_per_epoch})")
+                    break
+                
                 # Move to device and ensure correct dtype
                 x = x.to(self.device, dtype=torch.float32)
                 target = target.to(self.device, dtype=torch.long)
@@ -166,7 +173,10 @@ class WavenetTrainer:
                 # Forward pass
                 output = self.model(x)
                 
-                # Reshape target to match output
+                # Get expected output size based on input and target shapes
+                expected_output_samples = target.size(0)
+                
+                # Reshape target to match output format (flattened)
                 target = target.reshape(-1)
                 
                 # Check if shapes match, if not, adjust output
@@ -260,6 +270,11 @@ class WavenetTrainer:
 
                     # Forward pass
                     output = self.model(x)
+                    
+                    # Get expected output size based on input and target shapes
+                    expected_output_samples = target.size(0)
+                    
+                    # Reshape target to match output format (flattened)
                     target = target.reshape(-1)
                     
                     # Check if shapes match, if not, adjust output

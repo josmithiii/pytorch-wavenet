@@ -265,11 +265,14 @@ class WaveNetModel(nn.Module):
         # Get current shape
         batch_size, channels, time_steps = x.shape
         
-        # Print shape information for debugging
-        print(f"Output shape before reshape: {x.shape}")
+        # For shape debugging 
+        # print(f"Output shape before reshape: {x.shape}")
         
-        # Ensure tensor is contiguous
-        x = x.contiguous()
+        # Ensure tensor is contiguous and only keep the last output_length time steps
+        x = x[:, :, -self.output_length:].contiguous()
+        
+        # Update time_steps after truncation
+        batch_size, channels, time_steps = x.shape
         
         # Transpose to [batch_size, time_steps, channels]
         x = x.transpose(1, 2).contiguous()
@@ -277,7 +280,8 @@ class WaveNetModel(nn.Module):
         # Reshape to [batch_size * time_steps, channels]
         x = x.reshape(batch_size * time_steps, channels)
         
-        print(f"Final output shape: {x.shape}")
+        # For shape debugging
+        # print(f"Final output shape: {x.shape}, expected target shape: {batch_size * self.output_length}")
         
         return x
 

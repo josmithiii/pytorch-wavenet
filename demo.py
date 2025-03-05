@@ -181,6 +181,12 @@ def main():
                         help='Output length of the model')
     parser.add_argument('--dropout-rate', type=float, default=0.2,
                         help='Dropout rate')
+    parser.add_argument('--max-samples', type=int, default=None,
+                        help='Maximum number of samples to use from dataset (for quick testing)')
+    parser.add_argument('--test-stride', type=int, default=20,
+                        help='Stride for dataset subsampling (higher values = smaller dataset)')
+    parser.add_argument('--max-batches', type=int, default=None, 
+                        help='Maximum number of batches per epoch (for quick testing)')
     
     args = parser.parse_args()
     
@@ -192,11 +198,30 @@ def main():
     print(f"MPS built: {torch.backends.mps.is_built()}")
 
     def get_device():
+        """
+        Get the best available device for training.
+        
+        Returns:
+            torch.device: The device to use for training
+        """
+        # Check for CUDA first
         if torch.cuda.is_available():
-            return "cuda"
-        elif torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+            print("CUDA available: True")
+            return torch.device('cuda')
+        else:
+            print("CUDA available: False")
+            
+            # Check for MPS (Apple Silicon)
+            if hasattr(torch.backends, 'mps'):
+                print(f"MPS available: {torch.backends.mps.is_available()}")
+                print(f"MPS built: {torch.backends.mps.is_built()}")
+                if torch.backends.mps.is_available():
+                    # MPS has reshape issues, use CPU instead
+                    print("MPS available but using CPU to avoid reshape issues")
+                    pass
+            
+            # Fall back to CPU
+            return torch.device('cpu')
 
     device = get_device()
     print(f"Using device: {device}")
@@ -225,12 +250,12 @@ def main():
     print(f"  - Dropout rate: {args.dropout_rate}")
     print(f"Total parameters: {model.parameter_count():,}")
 
-    # Create dataset and dataloader (rest of the setup remains the same)
+    # Create dataset and dataloader
     data = WavenetDataset(dataset_file='train_samples/bach_chaconne/dataset.npz',
                          item_length=model.receptive_field + model.output_length - 1,
                          target_length=model.output_length,
                          file_location='train_samples/bach_chaconne',
-                         test_stride=20)
+                         test_stride=args.test_stride)
 
     print("Loading dataset file:", data.dataset_file)
     with np.load(data.dataset_file) as dataset:
@@ -243,8 +268,16 @@ def main():
     print(f"Dataset shape: {data.data.shape}")
     print(f"Dataset dtype: {data.data.dtype}")
 
-    # Create memory dataset
-    memory_dataset = MemoryDataset(data)
+    # Create memory dataset (with optional sample limiting)
+    if args.max_samples is not None and args.max_samples < len(data):
+        print(f"Limiting dataset to {args.max_samples} samples (out of {len(data)} available)")
+        indices = list(range(min(args.max_samples, len(data))))
+        limited_data = [data[i] for i in indices]
+        memory_dataset = MemoryDataset(limited_data)
+        print(f"Created limited dataset with {len(memory_dataset)} samples")
+    else:
+        memory_dataset = MemoryDataset(data)
+        print(f"Using full dataset with {len(memory_dataset)} samples")
 
     # Create trainer with memory_dataset
     trainer = WavenetTrainer(
@@ -258,7 +291,8 @@ def main():
         gradient_clipping=1,
         snapshot_interval=500,  # More frequent snapshots
         snapshot_path=args.model_dir,
-        val_interval=500  # More frequent validation
+        val_interval=500,  # More frequent validation
+        max_batches_per_epoch=args.max_batches
     )
 
     if args.mode == 'train':

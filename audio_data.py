@@ -119,3 +119,33 @@ def one_hot_encode(data, channels=256):
 def one_hot_decode(data):
     """Convert one-hot encoded data back to indices."""
     return np.argmax(data, axis=1)
+
+
+class MemoryDataset(torch.utils.data.Dataset):
+    """
+    Dataset that caches the entire dataset in memory.
+    Can be initialized with a dataset object or a list of items.
+    """
+    def __init__(self, data_source):
+        self.data = []
+        
+        # Check if data_source is a list of items
+        if isinstance(data_source, list):
+            self.data = data_source
+            print(f"MemoryDataset initialized with {len(self.data)} pre-loaded items")
+        else:
+            # Load entire dataset into memory
+            for i in range(len(data_source)):
+                try:
+                    item = data_source[i]
+                    self.data.append(item)
+                except Exception as e:
+                    print(f"Error loading item {i}: {e}")
+                    
+            print(f"Loaded {len(self.data)} items into memory from dataset")
+        
+    def __getitem__(self, idx):
+        return self.data[idx]
+    
+    def __len__(self):
+        return len(self.data)
