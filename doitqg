@@ -1,0 +1,6 @@
+#!/bin/bash -fx
+
+# Must match model params in ./doitqt
+
+python demo.py --mode generate --length 100 --output quick_test.wav --temperature 0.8 \
+               --layers 2 --blocks 1 --dilation-channels 8 --residual-channels 8 --skip-channels 16 --output-length 4

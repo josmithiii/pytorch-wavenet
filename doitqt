@@ -1,0 +1,5 @@
+#!/bin/bash -fx
+
+# python demo.py --mode train --epochs 1 --layers 4 --blocks 2 --dilation-channels 16 --residual-channels 16 --skip-channels 32 --output-length 8 --start-fresh
+# python demo.py --mode train --epochs 1 --layers 2 --blocks 1 --dilation-channels 8  --residual-channels 8  --skip-channels 16 --output-length 4 --batch-size 8 --start-fresh
+  python demo.py --mode train --epochs 1 --layers 2 --blocks 1 --dilation-channels 8  --residual-channels 8  --skip-channels 16 --output-length 4 --batch-size 8 --start-fresh --max-samples 100 --max-batches 10
