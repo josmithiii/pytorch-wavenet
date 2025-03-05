@@ -1,3 +1,5 @@
+# Created from demo.ipynb and debugged using Claude 3.5 Sonnet
+
 import time
 from wavenet_model import *
 from audio_data import WavenetDataset
@@ -13,6 +15,7 @@ from tqdm import tqdm
 import scipy.io.wavfile
 import torch.nn.functional as F
 import os
+from torch.utils.tensorboard import SummaryWriter
 
 class MemoryDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
@@ -107,6 +110,27 @@ def generate_audio(model, device, length=16000, temperature=1.0):
 
     return samples
 
+def generate_and_log_samples(model, step, temperature=1.0):
+    """
+    Generate audio samples and prepare them for logging.
+    Args:
+        model: The trained WaveNet model
+        step: Current training step (for logging)
+        temperature: Controls randomness in generation
+    Returns:
+        Dictionary containing the generated audio data
+    """
+    samples = generate_audio(model, model.device, length=16000, temperature=temperature)
+    
+    data = {
+        'temperature': temperature,
+        'samples': samples,
+        'step': step,
+        'sample_rate': 16000
+    }
+    
+    return data
+
 def main():
     # Set debug printing on/off
     set_debug(False)  # Change to True when you need debug output
@@ -169,13 +193,14 @@ def main():
     trainer = WavenetTrainer(
         model=model,
         dataset=memory_dataset,
-        batch_size=8,
+        batch_size=16, # was 8
         val_batch_size=32,
         val_subset_size=500,
         lr=0.001,
         snapshot_interval=1000,
         val_interval=1000,
-        gradient_clipping=1
+        gradient_clipping=1,
+        num_workers=4
     )
 
     # Add argument parser
@@ -186,22 +211,51 @@ def main():
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--resume', help='path to checkpoint to resume from')
     parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--tensorboard-dir', default='runs', help='TensorBoard log directory')
     args = parser.parse_args()
 
     if args.mode == 'train':
+        # Set up TensorBoard logging
+        log_dir = os.path.join(args.tensorboard_dir, time.strftime('%Y%m%d-%H%M%S'))
+        writer = SummaryWriter(log_dir)
+        print(f"\nTensorBoard logs will be saved to: {log_dir}")
+        print("To view training progress, run:")
+        print(f"tensorboard --logdir={args.tensorboard_dir}")
+        
+        # Set up TensorboardLogger with the writer
+        logger = TensorboardLogger(
+            log_interval=200,
+            validation_interval=200,
+            generate_interval=500,
+            generate_function=generate_and_log_samples,
+            log_dir=log_dir
+        )
+        trainer.logger = logger
+
         # Start training with additional error handling
         print('\nStarting training...')
         tic = time.time()
         try:
             trainer.train(epochs=args.epochs, resume_from=args.resume)
+        except KeyboardInterrupt:
+            print("\nTraining interrupted. Saving checkpoint...")
+            trainer.save_checkpoint(trainer.current_epoch)
+            print("Checkpoint saved. You can resume training using --resume")
         except Exception as e:
             print(f"\nError during training:")
             print(f"Error type: {type(e).__name__}")
             print(f"Error message: {str(e)}")
             print(f"Model device: {next(model.parameters()).device}")
             raise
-        toc = time.time()
-        print('Training took {} seconds.'.format(toc - tic))
+        finally:
+            toc = time.time()
+            print('Training took {} seconds.'.format(toc - tic))
+            writer.close()
+            
+        print("\nTraining complete!")
+        print(f"To analyze training results, run: tensorboard --logdir={args.tensorboard_dir}")
+        print("Then open http://localhost:6006 in your browser")
+
     else:
         # Load best model for generation if available
         best_model_path = os.path.join('snapshots', 'best_model.pt')
