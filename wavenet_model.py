@@ -450,8 +450,7 @@ def load_to_cpu(model_path):
                                     residual_channels=16,
                                     skip_channels=32,
                                     output_length=8,
-                                    dropout_rate=0.2,
-                                    bias=False)
+                                    dropout_rate=0.2)
                 # Load the state dict
                 model.load_state_dict(checkpoint['model_state_dict'])
                 return model
@@ -471,8 +470,7 @@ def load_to_cpu(model_path):
                             residual_channels=16,
                             skip_channels=32,
                             output_length=8,
-                            dropout_rate=0.2,
-                            bias=False)
+                            dropout_rate=0.2)
         return model
 
 def load_latest_model_from(location, use_cuda=True):
@@ -503,8 +501,7 @@ def load_latest_model_from(location, use_cuda=True):
                                 residual_channels=16,
                                 skip_channels=32,
                                 output_length=8,
-                                dropout_rate=0.2,
-                                bias=False)
+                                dropout_rate=0.2)
 
     return model
 

@@ -1,0 +1,14 @@
+#!/bin/bash -x
+
+# Exit on error
+set -euo pipefail
+
+# Using synth_match_env which has all dependencies installed:
+source /Users/jos/miniforge3/etc/profile.d/conda.sh
+conda activate synth_match_env
+
+# Install Hydra if needed
+pip install hydra-core
+
+# Training command with AST model type and limited steps for testing
+python train.py +model_type=ast +trainer.max_steps=10
