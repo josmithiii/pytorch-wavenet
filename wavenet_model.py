@@ -13,7 +13,7 @@ from audio_data import mu_law_expansion
 
 
 class WaveNetModel(nn.Module):
-    """
+    r"""
     A Complete WaveNet Model
 
     Args:
